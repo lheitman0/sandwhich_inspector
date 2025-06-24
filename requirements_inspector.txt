@@ -1,0 +1,24 @@
+# 🥪 Sandwich Inspector Requirements
+# ===================================
+
+# Streamlit for the web interface
+streamlit>=1.28.0
+pandas>=1.5.0
+
+# PDF Processing dependencies (from PB&J pipeline)
+llama-parse==0.6.35
+python-dotenv==1.0.1
+pydantic>=2.0.0
+typing-extensions>=4.5.0
+
+# Data Cleaning with OpenAI
+openai==1.3.7
+PyYAML==6.0.1
+
+# Fix httpx compatibility issue
+httpx==0.24.1
+
+# Additional dependencies for the inspector app
+pathlib2>=2.3.0  # For better path handling
+dataclasses-json>=0.5.0  # For better JSON serialization
+PyMuPDF>=1.23.0  # For PDF handling and display 
