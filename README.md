@@ -1,242 +1,217 @@
-# 🥪 Sandwich Inspector
+# Document Accuracy Inspector
 
-**A Visual Quality Control Tool for PDF Processing Pipelines**
+**A Visual Quality Control Tool for Reviewing Processed PDF Documents**
 
-The Sandwich Inspector is a Streamlit web application that provides an intuitive interface for inspecting, correcting, and validating the outputs a PDF processing pipeline (Specifically the PB&J repo). It allows you to review extracted tables side-by-side with original PDFs, make manual corrections, and maintain quality control over your document processing workflow.
+The Document Accuracy Inspector is a Streamlit web application designed for reviewing and editing documents that have already been processed through a PDF extraction pipeline. It provides a side-by-side comparison interface to verify the accuracy of extracted data against original PDFs, make corrections, and export clean final results.
 
 ---
 
 ## **What Does It Do?**
 
-- **Process PDFs**: Upload or select PDFs and run them through the PB&J pipeline
-- **Visual Review**: See original PDF pages alongside extracted structured data
-- **Manual Corrections**: Edit table data directly in an intuitive interface
-- **Quality Control**: Approve, flag, or edit each page with a simple workflow
-- **JSON Inspection**: View both table format and underlying JSON structure
+- **Load Processed Documents**: Review documents from the processed_documents folder
+- **Side-by-Side Verification**: Compare extracted data against original PDF pages
+- **Manual Corrections**: Edit table data (JSON format) and markdown content
+- **Portfolio Tagging**: Categorize documents (ts knee, knee, hips)
+- **Quality Control**: Approve, flag, or edit each page with visual progress tracking
+- **Export Clean Results**: Generate consolidated final output files
 
 ---
 
-## **Complete Setup Guide**
+## **Setup Guide**
 
-
-### **Step 1: Get Your API Keys**
-
-You'll need two API keys:
-
-1. **LlamaParse API Key**
-   - Go to [LlamaIndex Cloud](https://cloud.llamaindex.ai/)
-   - Sign up/login and get your API key
-   - Copy the key (starts with `llx-...`)
-
-2. **OpenAI API Key**
-   - Go to [OpenAI Platform](https://platform.openai.com/api-keys)
-   - Create an account and get your API key
-   - Copy the key (starts with `sk-...`)
-
-### **Step 2: Clone the Repository**
+### **Step 1: Install Dependencies**
 
 ```bash
-# Clone this sandwich inspector repository
-git clone <your-sandwich-inspector-repo-url>
-cd sandwich_inspector
-
-# Clone the required PB&J pipeline
-git clone https://github.com/DylanDHubert/peanut_butter_jelly
-```
-
-### **Step 3: Set Up Your Environment**
-
-```bash
-# Install dependencies
+# Install required packages
 pip install -r requirements_inspector.txt
 ```
 
-### **Step 4: Configure API Keys**
+### **Step 2: Prepare Input Data**
 
-The PB&J pipeline uses a flexible configuration system. You can configure your API keys in multiple ways:
+The app expects processed documents in the following structure:
 
-**Option A: Edit the config.yaml file (Recommended)**
-```bash
-# Navigate to the PB&J directory and edit the config
-cd peanut_butter_jelly
-nano config.yaml  # or use your preferred editor
+```
+processed_documents/
+└── document_name_YYYYMMDD_HHMMSS/
+    ├── document_name.pdf                    # Original PDF file
+    ├── document_metadata.json               # Processing metadata
+    ├── pipeline_summary.json                # Pipeline information
+    ├── inspector_metadata.json              # Review tracking (created by app)
+    ├── 01_parsed_markdown/                  # Raw extracted markdown
+    │   ├── page_1.md
+    │   ├── page_2.md
+    │   └── ...
+    ├── 02_enhanced_markdown/                # Enhanced markdown content
+    │   ├── page_1.md
+    │   ├── page_2.md
+    │   └── ...
+    └── 03_cleaned_json/                     # Structured data for each page
+        ├── page_1.json
+        ├── page_2.json
+        └── ...
 ```
 
-Update the config.yaml file with your API keys:
-```yaml
-# API KEYS
-# --------
-llamaparse_api_key: "your_llamaparse_api_key_here"
-openai_api_key: "your_openai_api_key_here"
+### **Step 3: Run the Application**
 
-# OUTPUT SETTINGS
-# --------------
-output_base_dir: "processed_documents"
-create_timestamped_folders: true
-use_premium_mode: true
-
-# OPENAI SETTINGS
-# ---------------
-openai_model: "gpt-4-turbo"
-max_tokens: 6000
-```
-
-**Option B: Environment Variables (Secure)**
-```bash
-export LLAMAPARSE_API_KEY="your_llamaparse_api_key_here"
-export OPENAI_API_KEY="your_openai_api_key_here"
-```
-
-**Option C: Create a .env file**
-```bash
-# Create .env file in the project root
-echo "LLAMAPARSE_API_KEY=your_llamaparse_api_key_here" > .env
-echo "OPENAI_API_KEY=your_openai_api_key_here" >> .env
-```
-
-**Configuration Priority (highest to lowest):**
-1. Environment variables
-2. config.yaml file  
-3. .env file
-4. Default values
-
-### **Step 5: Set Up Data Directory**
-
-```bash
-# Create data directory for your PDF files
-mkdir data
-
-# Add some PDF files to test with
-# Copy your PDF files into the data/ directory
-cp /path/to/your/pdfs/*.pdf data/
-```
-
-### **Step 6: Verify Installation**
-
-```bash
-# Use the built-in launcher to check everything
-python launch_inspector.py
-```
-
-
----
-
-## 📖 **How to Use**
-
-### **Starting the Application**
-
-**Method 1: Use the Launcher (Recommended)**
-```bash
-python launch_inspector.py
-```
-
-**Method 2: Direct Launch**
 ```bash
 streamlit run sandwich_inspector_app.py
 ```
 
 The app will open in your browser at `http://localhost:8501`
 
+---
+
+## **How to Use**
+
 ### **Basic Workflow**
 
 #### **1. Load a Document**
 
-**From Data Directory:**
-- Select a PDF from the dropdown in the sidebar
-- Click **"Process"** to run it through the pipeline
-- Wait for processing to complete
+- Select a processed document from the sidebar dropdown
+- Click "Load Document" to start reviewing
+- The app will load all pages and display the first page
 
+#### **2. Review Pages**
 
-#### **2. 🔍 Review Pages**
+**Left Panel - Ground Truth:**
+- Original PDF page for reference
 
-- **Navigate**: Use Previous/Next buttons or jump to specific pages
-- **Original PDF**: View on the left side
-- **Extracted Data**: Tables and structured data on the right
-- **JSON Structure**: See the underlying data format
+**Right Panel - Extracted Data:**
+- Tables tab: View/edit extracted table data
+- Markdown tab: View/edit page content
+- Fixed height containers keep PDF visible while scrolling
 
-#### **3. Edit Tables (Optional)**
+#### **3. Edit Content (Optional)**
 
-- Click **"✏️ Add Seasoning (Edit)"** to enter edit mode
-- Modify table cells directly
-- Add/remove rows using the interface
-- Changes are automatically saved
+**Table Editing:**
+- **View Mode**: Tables displayed as clean dataframes
+- **Edit Mode**: Raw JSON editing for precise control
+- Real-time validation with error feedback
 
-#### **4. 🎛️ Quality Control**
+**Markdown Editing:**
+- **View Mode**: Scrollable read-only content (500px height)
+- **Edit Mode**: Full text area for content modification
 
-For each page, choose one action:
+#### **4. Portfolio Tagging**
 
-- **✅ Take a Bite (Approve)**: Mark as correctly processed
-- **🚩 Save for Later (Flag)**: Mark for later review
-- **💾 Save Recipe (Export)**: Download current results
+- Select category: "ts knee", "knee", or "hips"
+- Tags are saved immediately and persist per document
+- Included in final export metadata
 
-#### **5. Track Progress**
+#### **5. Quality Control**
 
-- **Quality Summary**: See approval/flagged/pending counts
-- **Flagged Items**: Quick access to pages needing attention
-- **Progress Bar**: Visual completion tracking
+For each page:
+- **Approve Page**: Mark as accurately extracted
+- **Flag Issues**: Mark for later review
+- **Save Changes**: Save current edits
+- **Edit Mode**: Toggle between view/edit modes
 
-#### **6. Final Export**
+#### **6. Navigation**
 
-Click **"🏁 Create Final Output Folder"** to generate:
-- **Clean JSON**: Final structured data with your corrections
-- **Summary Report**: Comprehensive markdown summary
-- **Individual Pages**: Separate files for each page
-- **Original PDF**: Copy of the source document
+- **Previous/Next buttons**: Navigate sequentially
+- **Page dropdown**: Jump to specific pages
+- **Quick navigation**: Click page numbers with status indicators
+- **Progress tracking**: Visual completion status
+
+#### **7. Final Export**
+
+Click "Export Final" to create consolidated output with:
+- Clean JSON with all corrections
+- Consolidated markdown content
+- Original PDF and metadata
+- Portfolio tag information
 
 ---
 
-##  **Understanding the Output**
+## **Expected Input Structure**
 
-### **Processing Output Structure**
-```
-peanut_butter_jelly/processed_documents/
-└── document_name_YYYYMMDD_HHMMSS/
-    ├── final_output.json          # Main structured data (your edits)
-    ├── inspector_metadata.json    # Review tracking data
-    ├── document_metadata.json     # Pipeline processing info
-    └── original.pdf              # Source PDF
+### **Page JSON Format (03_cleaned_json/page_X.json)**
+
+```json
+{
+  "page_id": "page_1",
+  "title": "Page Title",
+  "summary": "Page summary",
+  "keywords": ["keyword1", "keyword2", "keyword3"],
+  "tables": [
+    {
+      "title": "Table Title",
+      "data": [
+        {
+          "Column 1": "Value 1",
+          "Column 2": "Value 2",
+          "Column 3": "Value 3"
+        },
+        {
+          "Column 1": "Value 4",
+          "Column 2": "Value 5",
+          "Column 3": "Value 6"
+        }
+      ],
+      "table_id": "table_1",
+      "description": "Table description",
+      "metadata": {
+        "row_count": 2,
+        "column_count": 3
+      }
+    }
+  ],
+  "raw_content": "Markdown content for the page...",
+  "processing_metadata": {
+    "source_file": "path/to/source",
+    "processed_at": "2025-01-24T14:24:15.095699",
+    "model_used": "gpt-4"
+  }
+}
 ```
 
-### **Final Export Structure**
+### **Enhanced Markdown Format (02_enhanced_markdown/page_X.md)**
+
+Plain markdown content that can be edited in the interface.
+
+---
+
+## **Output Structure**
+
+### **Final Export Folder**
+
+When you export, the app creates:
+
 ```
-final_outputs/
-└── document_name_final/
-    ├── document_name_final.json   # Clean final JSON
-    ├── document_name_summary.md   # Complete summary
-    ├── document_name.pdf          # Original PDF
-    ├── export_report.json         # Export metadata
-    └── pages/                     # Individual page files
-        ├── page_01_title.md
-        ├── page_02_title.md
-        └── ...
+final_pdfname_YYYYMMDD_HHMMSS/
+├── pdfname.pdf                    # Original PDF
+├── pdfname_final.json             # Consolidated JSON (all pages)
+├── pdfname_final.md               # Consolidated markdown (all pages)
+├── document_metadata.json         # Original processing metadata
+├── pipeline_summary.json          # Pipeline information
+└── inspector_metadata.json        # Review metadata with portfolio tag
 ```
 
-### **JSON Structure**
+### **Consolidated JSON Structure**
+
 ```json
 {
   "document_info": {
-    "document_name": "sample_document",
-    "total_pages": 5,
-    "total_tables": 12,
+    "document_name": "document_name",
+    "export_date": "2025-01-24T15:30:45.123456",
+    "total_pages": 4,
+    "portfolio": "knee",
     "review_status": {
-      "approved_pages": 4,
+      "approved_pages": 3,
       "flagged_pages": 1
     }
   },
   "pages": [
     {
-      "page_id": "page_1",
-      "title": "Introduction",
-      "summary": "Page summary...",
+      "page_number": 1,
+      "title": "Page Title",
       "keywords": ["keyword1", "keyword2"],
       "tables": [
         {
-          "table_id": "table_1",
-          "title": "Financial Data",
-          "columns": ["Year", "Revenue", "Profit"],
-          "rows": [
-            ["2021", "$1M", "$200K"],
-            ["2022", "$1.2M", "$250K"]
+          "title": "Table Title",
+          "data": [
+            {"Column 1": "Value 1", "Column 2": "Value 2"},
+            {"Column 1": "Value 3", "Column 2": "Value 4"}
           ]
         }
       ]
@@ -245,7 +220,81 @@ final_outputs/
 }
 ```
 
+### **Inspector Metadata**
 
+```json
+{
+  "page_statuses": {
+    "0": "approved",
+    "1": "approved", 
+    "2": "flagged",
+    "3": "approved"
+  },
+  "flagged_pages": [2],
+  "portfolio": "knee",
+  "last_updated": "2025-01-24T15:30:45.123456",
+  "total_pages": 4
+}
+```
 
+---
 
-*The Sandwich Inspector - Making document processing deliciously reliable.* 
+## **Features**
+
+### **Visual Interface**
+- Side-by-side PDF and data comparison
+- Clean, professional design optimized for accuracy review
+- Fixed-height scrollable content areas
+- Real-time status indicators
+
+### **Editing Capabilities**
+- JSON table editing with validation
+- Markdown content editing
+- Auto-save functionality
+- Undo-friendly workflow
+
+### **Quality Control**
+- Page-by-page approval workflow
+- Flag problematic pages for review
+- Progress tracking with visual indicators
+- Batch export capabilities
+
+### **Organization**
+- Portfolio tagging system
+- Persistent document state
+- Unique timestamped outputs
+- Comprehensive metadata tracking
+
+---
+
+## **Requirements**
+
+- Python 3.8+
+- Streamlit
+- pandas
+- PyMuPDF (for PDF viewing)
+- pathlib2
+- dataclasses-json
+
+---
+
+## **Troubleshooting**
+
+### **Document Won't Load**
+- Check that the processed_documents folder structure is correct
+- Ensure page JSON files exist in 03_cleaned_json/
+- Verify JSON format matches expected structure
+
+### **Tables Don't Display**
+- Check that table data is in the correct format (list of dictionaries)
+- Verify JSON syntax is valid
+- Ensure table "data" field contains the row information
+
+### **PDF Not Showing**
+- Confirm PDF file exists in the document folder
+- Check that PDF filename matches the document name pattern
+- Verify PyMuPDF is properly installed
+
+---
+
+*Document Accuracy Inspector - Ensuring reliable document processing quality control.* 
