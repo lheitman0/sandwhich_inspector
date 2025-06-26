@@ -305,10 +305,102 @@ class SandwichInspector:
             json_folder = document_folder / "03_cleaned_json"
             markdown_folder = document_folder / "02_enhanced_markdown"
             
-            if not json_folder.exists() or not markdown_folder.exists():
+            # Check for the new final_output.json structure first
+            final_output_file = document_folder / "final_output.json"
+            
+            if final_output_file.exists():
+                # Load from new consolidated JSON structure
+                self._load_from_final_output(document_folder, final_output_file)
+            elif json_folder.exists() and markdown_folder.exists():
+                # Fallback to old individual file structure for backward compatibility
+                self._load_from_individual_files(document_folder, json_folder, markdown_folder)
+            else:
                 st.error(f"❌ Invalid document structure in {document_folder.name}")
+                st.error("Expected either 'final_output.json' or '03_cleaned_json/' folder")
+                return
+                
+        except Exception as e:
+            st.error(f"❌ Error loading document: {e}")
+
+    def _load_from_final_output(self, document_folder, final_output_file):
+        """Load document from new final_output.json structure"""
+        try:
+            with open(final_output_file, 'r') as f:
+                final_data = json.load(f)
+            
+            # Extract pages from the new structure
+            pages_data = final_data.get('pages', [])
+            if not pages_data:
+                st.error("❌ No pages found in final_output.json")
                 return
             
+            # Convert to ProcessedPage objects
+            processed_pages = []
+            for i, page_data in enumerate(pages_data):
+                try:
+                    # Get page content - try different field names for compatibility
+                    page_content = page_data.get('raw_content', page_data.get('content', ''))
+                    
+                    # Load corresponding markdown file if available (optional)
+                    markdown_folder = document_folder / "02_enhanced_markdown"
+                    if markdown_folder.exists():
+                        markdown_file = markdown_folder / f"page_{i+1}.md"
+                        if markdown_file.exists():
+                            try:
+                                with open(markdown_file, 'r', encoding='utf-8') as f:
+                                    markdown_content = f.read()
+                                # Use markdown file content if it exists and is longer
+                                if len(markdown_content.strip()) > len(page_content.strip()):
+                                    page_content = markdown_content
+                            except Exception:
+                                pass
+                    
+                    # Create ProcessedTable objects from new structure
+                    tables = []
+                    tables_data = page_data.get('tables', [])
+                    
+                    if tables_data and isinstance(tables_data, list):
+                        for table_data in tables_data:
+                            if isinstance(table_data, dict):
+                                # Handle new "rows" format (objects with column names as keys)
+                                rows = table_data.get('rows', [])
+                                
+                                if rows and isinstance(rows, list) and len(rows) > 0:
+                                    # Convert rows format to the data format expected by our UI
+                                    # rows: [{"Column A": "value1", "Column B": "value2"}, ...]
+                                    # becomes data: [{"Column A": "value1", "Column B": "value2"}, ...]
+                                    # (actually the format is already compatible!)
+                                    
+                                    table = ProcessedTable(
+                                        title=table_data.get('title', table_data.get('table_id', 'Untitled Table')),
+                                        data=rows  # rows format is already compatible with our UI
+                                    )
+                                    tables.append(table)
+                    
+                    # Create ProcessedPage object
+                    page = ProcessedPage(
+                        title=page_data.get('title', f'Page {i+1}'),
+                        content=page_content,
+                        tables=tables,
+                        keywords=page_data.get('keywords', [])
+                    )
+                    processed_pages.append(page)
+                    
+                except Exception as e:
+                    st.error(f"❌ Error loading page {i+1}: {e}")
+                    continue
+            
+            if processed_pages:
+                self._finalize_document_loading(document_folder, processed_pages)
+            else:
+                st.error("❌ No pages could be loaded from the document")
+                
+        except Exception as e:
+            st.error(f"❌ Error reading final_output.json: {e}")
+
+    def _load_from_individual_files(self, document_folder, json_folder, markdown_folder):
+        """Load document from old individual file structure (backward compatibility)"""
+        try:
             # Load all page JSONs and markdowns
             json_files = sorted(json_folder.glob("page_*.json"))
             markdown_files = sorted(markdown_folder.glob("page_*.md"))
@@ -342,7 +434,7 @@ class SandwichInspector:
                         for table_data in table_data_list:
                             # Ensure table_data is a dictionary
                             if isinstance(table_data, dict):
-                                # Tables are now in data format (list of dictionaries)
+                                # Tables are in old "data" format (list of dictionaries)
                                 data = table_data.get('data', [])
                                 
                                 # Only create table if there's actual data
@@ -353,11 +445,11 @@ class SandwichInspector:
                                     )
                                     tables.append(table)
                     
-                    # Create ProcessedPage object - tables list can be empty
+                    # Create ProcessedPage object
                     page = ProcessedPage(
                         title=page_data.get('title', f'Page {i+1}'),
                         content=markdown_content,
-                        tables=tables,  # This can be an empty list
+                        tables=tables,
                         keywords=page_data.get('keywords', [])
                     )
                     processed_pages.append(page)
@@ -365,48 +457,52 @@ class SandwichInspector:
                 except Exception as e:
                     st.error(f"❌ Error loading page {i+1}: {e}")
                     continue
-                
+            
             if processed_pages:
-                # Update session state
-                st.session_state.processed_pages = processed_pages
-                st.session_state.document_folder = document_folder
-                st.session_state.current_page_idx = 0
-                st.session_state.page_statuses = {i: 'pending' for i in range(len(processed_pages))}
-                st.session_state.flagged_pages = set()
-                st.session_state.edit_mode = False
-                
-                # Load existing metadata if available
-                metadata_path = document_folder / "inspector_metadata.json"
-                if metadata_path.exists():
-                    try:
-                        with open(metadata_path, 'r') as f:
-                            metadata = json.load(f)
-                            # Restore portfolio tag
-                            st.session_state.portfolio_tag = metadata.get('portfolio', None)
-                            # Restore page statuses and flags
-                            if 'page_statuses' in metadata:
-                                st.session_state.page_statuses.update(metadata['page_statuses'])
-                            if 'flagged_pages' in metadata:
-                                st.session_state.flagged_pages = set(metadata['flagged_pages'])
-                    except Exception as e:
-                        st.warning(f"Could not load existing metadata: {e}")
-                
-                # Count pages with/without tables for informative message
-                pages_with_tables = sum(1 for page in processed_pages if page.tables and len(page.tables) > 0)
-                pages_without_tables = len(processed_pages) - pages_with_tables
-                
-                st.success(f"✅ Loaded document: {document_folder.name}")
-                st.success(f"📄 {len(processed_pages)} pages ready for review")
-                
-                if pages_without_tables > 0:
-                    st.info(f"ℹ️ Note: {pages_without_tables} page(s) contain no tabular data (this is normal)")
-                
-                st.rerun()
+                self._finalize_document_loading(document_folder, processed_pages)
             else:
                 st.error("❌ No pages could be loaded from the document")
-                    
+                
         except Exception as e:
-            st.error(f"❌ Error loading document: {e}")
+            st.error(f"❌ Error loading from individual files: {e}")
+
+    def _finalize_document_loading(self, document_folder, processed_pages):
+        """Finalize document loading - common code for both loading methods"""
+        # Update session state
+        st.session_state.processed_pages = processed_pages
+        st.session_state.document_folder = document_folder
+        st.session_state.current_page_idx = 0
+        st.session_state.page_statuses = {i: 'pending' for i in range(len(processed_pages))}
+        st.session_state.flagged_pages = set()
+        st.session_state.edit_mode = False
+        
+        # Load existing metadata if available
+        metadata_path = document_folder / "inspector_metadata.json"
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    # Restore portfolio tag
+                    st.session_state.portfolio_tag = metadata.get('portfolio', None)
+                    # Restore page statuses and flags
+                    if 'page_statuses' in metadata:
+                        st.session_state.page_statuses.update(metadata['page_statuses'])
+                    if 'flagged_pages' in metadata:
+                        st.session_state.flagged_pages = set(metadata['flagged_pages'])
+            except Exception as e:
+                st.warning(f"Could not load existing metadata: {e}")
+        
+        # Count pages with/without tables for informative message
+        pages_with_tables = sum(1 for page in processed_pages if page.tables and len(page.tables) > 0)
+        pages_without_tables = len(processed_pages) - pages_with_tables
+        
+        st.success(f"✅ Loaded document: {document_folder.name}")
+        st.success(f"📄 {len(processed_pages)} pages ready for review")
+        
+        if pages_without_tables > 0:
+            st.info(f"ℹ️ Note: {pages_without_tables} page(s) contain no tabular data (this is normal)")
+        
+        st.rerun()
 
     def render_page_content(self):
         """Render the main page content area"""
@@ -654,10 +750,99 @@ class SandwichInspector:
                             st.rerun()
 
     def save_current_state(self):
-        """Save current state back to individual page JSON files"""
+        """Save current state back to appropriate format (final_output.json or individual files)"""
         if not st.session_state.document_folder or not st.session_state.processed_pages:
             return
         
+        try:
+            # Check which format we're working with
+            final_output_file = st.session_state.document_folder / "final_output.json"
+            
+            if final_output_file.exists():
+                # Save back to final_output.json format
+                self._save_to_final_output(final_output_file)
+            else:
+                # Save back to individual files format
+                self._save_to_individual_files()
+            
+            # Always save inspector metadata
+            self._save_inspector_metadata()
+                
+        except Exception as e:
+            st.error(f"Error saving state: {str(e)}")
+
+    def _save_to_final_output(self, final_output_file):
+        """Save changes back to final_output.json format"""
+        try:
+            # Load existing final_output.json
+            with open(final_output_file, 'r') as f:
+                final_data = json.load(f)
+            
+            # Update the pages data with our changes
+            if 'pages' in final_data:
+                for i, page in enumerate(st.session_state.processed_pages):
+                    if i < len(final_data['pages']):
+                        # Update the page data
+                        page_data = final_data['pages'][i]
+                        
+                        # Update title if changed
+                        page_data['title'] = page.title
+                        
+                        # Update keywords if changed
+                        page_data['keywords'] = page.keywords
+                        
+                        # Update content - save to both raw_content and content fields for compatibility
+                        if page.content:
+                            page_data['raw_content'] = page.content
+                            page_data['content'] = page.content
+                        
+                        # Update tables - convert back to rows format
+                        if page.tables:
+                            # Update existing tables or create new ones
+                            updated_tables = []
+                            for j, table in enumerate(page.tables):
+                                if j < len(page_data.get('tables', [])):
+                                    # Update existing table
+                                    table_data = page_data['tables'][j]
+                                    table_data['title'] = table.title
+                                    table_data['rows'] = table.data  # Our data format is already rows format
+                                    
+                                    # Update metadata if it exists
+                                    if 'metadata' in table_data and table.data:
+                                        table_data['metadata']['row_count'] = len(table.data)
+                                        if table.data:
+                                            table_data['metadata']['column_count'] = len(table.data[0]) if table.data[0] else 0
+                                    
+                                    updated_tables.append(table_data)
+                                else:
+                                    # Create new table
+                                    new_table = {
+                                        'table_id': f'table_{j+1}',
+                                        'title': table.title,
+                                        'description': '',
+                                        'rows': table.data,
+                                        'metadata': {
+                                            'row_count': len(table.data) if table.data else 0,
+                                            'column_count': len(table.data[0]) if table.data and table.data[0] else 0,
+                                            'data_types': []
+                                        }
+                                    }
+                                    updated_tables.append(new_table)
+                            
+                            page_data['tables'] = updated_tables
+                        else:
+                            # No tables - set empty array
+                            page_data['tables'] = []
+            
+            # Save the updated final_output.json
+            with open(final_output_file, 'w') as f:
+                json.dump(final_data, f, indent=2, ensure_ascii=False)
+                
+        except Exception as e:
+            st.error(f"Error saving to final_output.json: {str(e)}")
+
+    def _save_to_individual_files(self):
+        """Save changes back to individual file format (backward compatibility)"""
         try:
             # Save back to the individual page JSON files in 03_cleaned_json
             json_folder = st.session_state.document_folder / "03_cleaned_json"
@@ -693,7 +878,13 @@ class SandwichInspector:
                     # Handle empty content gracefully
                     content_to_save = page.content if page.content else ""
                     f.write(content_to_save)
-            
+                    
+        except Exception as e:
+            st.error(f"Error saving to individual files: {str(e)}")
+
+    def _save_inspector_metadata(self):
+        """Save inspector metadata (common for both formats)"""
+        try:
             # Save inspector metadata (including portfolio tag)
             inspector_metadata = {
                 'page_statuses': st.session_state.page_statuses,
@@ -708,7 +899,7 @@ class SandwichInspector:
                 json.dump(inspector_metadata, f, indent=2)
                 
         except Exception as e:
-            st.error(f"Error saving state: {str(e)}")
+            st.error(f"Error saving inspector metadata: {str(e)}")
 
     def save_portfolio_tag(self):
         """Save portfolio tag to metadata immediately"""
@@ -743,9 +934,29 @@ class SandwichInspector:
             return
         
         try:
-            # Get document name (e.g., "short" from "short_20250624_142041")
+            # Get document name (e.g., "short" from "short_20250624_142041" or from document_id)
             source_folder_name = st.session_state.document_folder.name
+            
+            # Try to get document name from various sources
             doc_name = source_folder_name.split('_')[0]
+            
+            # If we have a final_output.json, try to get document name from there
+            final_output_file = st.session_state.document_folder / "final_output.json"
+            if final_output_file.exists():
+                try:
+                    with open(final_output_file, 'r') as f:
+                        final_data = json.load(f)
+                    # Try to extract document name from document_info
+                    if 'document_info' in final_data:
+                        doc_info = final_data['document_info']
+                        if 'document_id' in doc_info:
+                            # Extract from document_id like "doc_20250625_211701"
+                            doc_id_parts = doc_info['document_id'].split('_')
+                            if len(doc_id_parts) > 0 and doc_id_parts[0] == 'doc':
+                                # Use the timestamp part or just use 'doc'
+                                doc_name = 'doc'
+                except Exception:
+                    pass  # Fall back to folder name approach
             
             # Create final output directory with format: final_pdfname_timestamp
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -753,47 +964,78 @@ class SandwichInspector:
             final_output_dir.mkdir(parents=True, exist_ok=True)
             
             # 1. Copy original PDF and metadata files
-            source_files_to_copy = [
-                (st.session_state.document_folder / f"{doc_name}.pdf", final_output_dir / f"{doc_name}.pdf"),
-                (st.session_state.document_folder / "document_metadata.json", final_output_dir / "document_metadata.json"),
-                (st.session_state.document_folder / "pipeline_summary.json", final_output_dir / "pipeline_summary.json"),
-                (st.session_state.document_folder / "inspector_metadata.json", final_output_dir / "inspector_metadata.json")
+            pdf_candidates = [
+                st.session_state.document_folder / f"{doc_name}.pdf",
+                st.session_state.document_folder / "document.pdf"
+            ]
+            
+            # Find the PDF file
+            pdf_found = False
+            for pdf_path in pdf_candidates:
+                if pdf_path.exists():
+                    import shutil
+                    shutil.copy2(pdf_path, final_output_dir / f"{doc_name}.pdf")
+                    pdf_found = True
+                    break
+            
+            # Copy metadata files if they exist
+            metadata_files_to_copy = [
+                ("document_metadata.json", "document_metadata.json"),
+                ("pipeline_summary.json", "pipeline_summary.json"),
+                ("inspector_metadata.json", "inspector_metadata.json"),
+                ("final_output.json", "original_final_output.json")  # Keep original for reference
             ]
             
             import shutil
-            for src, dst in source_files_to_copy:
-                if src.exists():
-                    shutil.copy2(src, dst)
+            for src_name, dst_name in metadata_files_to_copy:
+                src_path = st.session_state.document_folder / src_name
+                if src_path.exists():
+                    shutil.copy2(src_path, final_output_dir / dst_name)
             
-            # 2. Consolidate all page JSONs into a single final JSON
+            # 2. Create consolidated final JSON in the new format
             consolidated_json = {
-                        "document_info": {
+                "document_info": {
                     "document_name": doc_name,
                     "export_date": datetime.now().isoformat(),
                     "total_pages": len(st.session_state.processed_pages),
+                    "total_tables": sum(len(page.tables) for page in st.session_state.processed_pages),
                     "portfolio": st.session_state.get('portfolio_tag', None),
-                            "review_status": {
-                                "approved_pages": len([i for i in st.session_state.page_statuses.values() if i == 'approved']),
+                    "review_status": {
+                        "approved_pages": len([i for i in st.session_state.page_statuses.values() if i == 'approved']),
                         "flagged_pages": len(st.session_state.flagged_pages)
-                            }
-                        },
+                    }
+                },
                 "pages": []
             }
             
-            # Add all page data
+            # Add all page data in the new format
             for i, page in enumerate(st.session_state.processed_pages):
                 page_data = {
-                    "page_number": i + 1,
+                    "page_id": f"page_{i+1}",
                     "title": page.title,
+                    "summary": f"Page {i+1} content",
                     "keywords": page.keywords,
-                    "tables": []
+                    "tables": [],
+                    "raw_content": page.content,
+                    "processing_metadata": {
+                        "review_status": st.session_state.page_statuses.get(i, 'pending'),
+                        "flagged": i in st.session_state.flagged_pages,
+                        "last_reviewed": datetime.now().isoformat()
+                    }
                 }
                 
-                # Add table data
-                for table in page.tables:
+                # Add table data in the new "rows" format
+                for j, table in enumerate(page.tables):
                     table_data = {
+                        "table_id": f"table_{j+1}",
                         "title": table.title,
-                        "data": table.data
+                        "description": f"Table from page {i+1}",
+                        "rows": table.data,  # Already in correct format
+                        "metadata": {
+                            "row_count": len(table.data) if table.data else 0,
+                            "column_count": len(table.data[0]) if table.data and table.data[0] else 0,
+                            "data_types": []
+                        }
                     }
                     page_data["tables"].append(table_data)
                 
@@ -804,14 +1046,29 @@ class SandwichInspector:
             with open(final_json_path, 'w') as f:
                 json.dump(consolidated_json, f, indent=2, ensure_ascii=False)
             
-            # 3. Consolidate all enhanced markdowns into a single final markdown
+            # 3. Create consolidated markdown
             consolidated_markdown = f"# {doc_name} - Final Document\n\n"
             consolidated_markdown += f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             
             # Add all page content
             for i, page in enumerate(st.session_state.processed_pages):
                 consolidated_markdown += f"## Page {i+1}: {page.title}\n\n"
-                consolidated_markdown += page.content + "\n\n"
+                
+                # Add keywords
+                if page.keywords:
+                    consolidated_markdown += f"**Keywords:** {', '.join(page.keywords)}\n\n"
+                
+                # Add content
+                if page.content:
+                    consolidated_markdown += page.content + "\n\n"
+                
+                # Add table summaries
+                if page.tables:
+                    consolidated_markdown += f"**Tables on this page:** {len(page.tables)}\n"
+                    for j, table in enumerate(page.tables):
+                        consolidated_markdown += f"- {table.title} ({len(table.data)} rows)\n"
+                    consolidated_markdown += "\n"
+                
                 consolidated_markdown += "---\n\n"
             
             # Save consolidated markdown
@@ -820,6 +1077,7 @@ class SandwichInspector:
                 f.write(consolidated_markdown)
             
             portfolio_info = f"\n            - 🏷️ Portfolio: {st.session_state.portfolio_tag}" if st.session_state.get('portfolio_tag') else ""
+            pdf_info = "- 📄 Original PDF" if pdf_found else "- ⚠️ Original PDF not found"
             
             st.success(f"""
             🎉 **Final Output Created Successfully!**
@@ -827,12 +1085,10 @@ class SandwichInspector:
             **Location:** `{final_output_dir}`
             
             **Files Created:**
-            - 📄 `{doc_name}.pdf` - Original PDF  
-            - 📊 `{doc_name}_final.json` - Consolidated JSON data
+            - {pdf_info}
+            - 📊 `{doc_name}_final.json` - Consolidated JSON data (new format)
             - 📝 `{doc_name}_final.md` - Consolidated markdown
-            - 📋 `document_metadata.json` - Document metadata
-            - 📋 `pipeline_summary.json` - Pipeline summary
-            - 📋 `inspector_metadata.json` - Inspector metadata
+            - 📋 Metadata files (document, pipeline, inspector)
             
             **Review Status:**
             - ✅ Approved: {len([i for i in st.session_state.page_statuses.values() if i == 'approved'])} pages
