@@ -11,4 +11,4 @@ PyMuPDF>=1.23.0
 
 # Additional dependencies for the inspector app
 pathlib2>=2.3.0  # For better path handling
-dataclasses-json>=0.5.0  # For better JSON serialization 
+dataclasses-json>=0.5.0  # For better JSON serialization

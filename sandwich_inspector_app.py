@@ -316,7 +316,7 @@ class SandwichInspector:
             if not json_files:
                 st.error(f"❌ No page JSON files found in {document_folder.name}")
                 return
-            
+                
             # Convert to ProcessedPage objects
             processed_pages = []
             for i, json_file in enumerate(json_files):
@@ -333,23 +333,31 @@ class SandwichInspector:
                         except Exception:
                             pass
                     
-                    # Create ProcessedTable objects
+                    # Create ProcessedTable objects - handle empty tables gracefully
                     tables = []
-                    for table_data in page_data.get('tables', []):
-                        # Tables are now in data format (list of dictionaries)
-                        data = table_data.get('data', [])
-                        
-                        table = ProcessedTable(
-                            title=table_data.get('title', 'Untitled Table'),
-                            data=data
-                        )
-                        tables.append(table)
+                    table_data_list = page_data.get('tables', [])
                     
-                    # Create ProcessedPage object
+                    # Only process if there are actual tables
+                    if table_data_list and isinstance(table_data_list, list):
+                        for table_data in table_data_list:
+                            # Ensure table_data is a dictionary
+                            if isinstance(table_data, dict):
+                                # Tables are now in data format (list of dictionaries)
+                                data = table_data.get('data', [])
+                                
+                                # Only create table if there's actual data
+                                if data and isinstance(data, list) and len(data) > 0:
+                                    table = ProcessedTable(
+                                        title=table_data.get('title', 'Untitled Table'),
+                                        data=data
+                                    )
+                                    tables.append(table)
+                    
+                    # Create ProcessedPage object - tables list can be empty
                     page = ProcessedPage(
                         title=page_data.get('title', f'Page {i+1}'),
                         content=markdown_content,
-                        tables=tables,
+                        tables=tables,  # This can be an empty list
                         keywords=page_data.get('keywords', [])
                     )
                     processed_pages.append(page)
@@ -357,7 +365,7 @@ class SandwichInspector:
                 except Exception as e:
                     st.error(f"❌ Error loading page {i+1}: {e}")
                     continue
-            
+                
             if processed_pages:
                 # Update session state
                 st.session_state.processed_pages = processed_pages
@@ -383,49 +391,46 @@ class SandwichInspector:
                     except Exception as e:
                         st.warning(f"Could not load existing metadata: {e}")
                 
+                # Count pages with/without tables for informative message
+                pages_with_tables = sum(1 for page in processed_pages if page.tables and len(page.tables) > 0)
+                pages_without_tables = len(processed_pages) - pages_with_tables
+                
                 st.success(f"✅ Loaded document: {document_folder.name}")
                 st.success(f"📄 {len(processed_pages)} pages ready for review")
+                
+                if pages_without_tables > 0:
+                    st.info(f"ℹ️ Note: {pages_without_tables} page(s) contain no tabular data (this is normal)")
+                
                 st.rerun()
             else:
                 st.error("❌ No pages could be loaded from the document")
-                
+                    
         except Exception as e:
             st.error(f"❌ Error loading document: {e}")
 
-
-
-
-
     def render_page_content(self):
-        """Render optimized accuracy review UI - side-by-side comparison"""
+        """Render the main page content area"""
         if not st.session_state.processed_pages:
             st.markdown("""
-            ## 🔍 Document Accuracy Inspector
+            <div style="text-align: center; padding: 40px; background: #f8f9fa; border-radius: 10px; margin: 20px 0;">
+                <h3 style="color: #666;">🥪 Ready to Inspect Documents</h3>
+                <p style="color: #888; margin: 10px 0;">Select a processed document from the sidebar to begin quality review</p>
+                <p style="font-size: 14px; color: #aaa;">
+                    💡 <em>Tip: Place processed documents in the <code>processed_documents/</code> folder</em>
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
             
-            Select a processed document from the sidebar to start reviewing. This tool helps you:
-            
-            **📊 Compare extracted data against the original PDF**
-            - Side-by-side view of PDF and extracted content
-            - Verify table data accuracy
-            - Review and edit markdown content
-            - Approve accurate extractions or flag issues
-            
-            **✏️ Make corrections in real-time**
-            - Edit tables directly in the interface
-            - Modify markdown content as needed
-            - Save changes back to source files
-            
-            **🏁 Export verified results**  
-            - Generate clean, consolidated output files
-            - Maintain audit trail of reviews
-            """)
+            # Random encouraging message
+            st.info(f"🎯 {get_random_message('processing')}")
             return
         
         current_page = st.session_state.processed_pages[st.session_state.current_page_idx]
         page_num = st.session_state.current_page_idx + 1
         
-        # Compact header with page status
-        status_icon = "✅" if st.session_state.page_statuses.get(st.session_state.current_page_idx) == 'approved' else "🚩" if st.session_state.current_page_idx in st.session_state.flagged_pages else "⏳"
+        # Page status indicator
+        page_status = st.session_state.page_statuses.get(st.session_state.current_page_idx, 'pending')
+        status_icon = "✅" if page_status == 'approved' else "🚩" if st.session_state.current_page_idx in st.session_state.flagged_pages else "⏳"
         
         st.markdown(f"""
         <div style="background: linear-gradient(90deg, #f0f2f6, #ffffff); padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #e6e9ef;">
@@ -462,11 +467,19 @@ class SandwichInspector:
         with data_col:
             st.markdown("### 🔍 Extracted Data - Verify Accuracy")
             
-            # Use tabs for different data types
-            if current_page.tables:
-                tab_labels = ["📊 Tables"] + (["📝 Markdown"] if current_page.content.strip() else [])
+            # Check what data we have
+            has_tables = current_page.tables and len(current_page.tables) > 0
+            has_content = current_page.content and current_page.content.strip()
+            
+            # Determine tab structure
+            if has_tables and has_content:
+                tab_labels = ["📊 Tables", "📝 Markdown"]
+            elif has_tables:
+                tab_labels = ["📊 Tables"]
+            elif has_content:
+                tab_labels = ["📝 Markdown"]
             else:
-                tab_labels = ["📝 Markdown"] if current_page.content.strip() else ["ℹ️ No Data"]
+                tab_labels = ["ℹ️ No Data"]
             
             if len(tab_labels) > 1:
                 tabs = st.tabs(tab_labels)
@@ -476,7 +489,7 @@ class SandwichInspector:
                 tab_idx = 0
             
             # Tables tab
-            if current_page.tables:
+            if has_tables:
                 with tabs[tab_idx]:
                     for i, table in enumerate(current_page.tables):
                         st.markdown(f"#### 📋 {table.title}")
@@ -485,7 +498,7 @@ class SandwichInspector:
                             if st.session_state.edit_mode:
                                 # Edit mode: Show raw JSON for editing
                                 st.info("🔧 **EDIT MODE**: Edit the raw JSON data below")
-                                
+                    
                                 # Convert current table data to JSON string
                                 table_json = {
                                     "title": table.title,
@@ -501,7 +514,7 @@ class SandwichInspector:
                                     key=f"json_editor_{st.session_state.current_page_idx}_{i}",
                                     help="Edit the JSON structure. Make sure to keep valid JSON format."
                                 )
-                                
+                            
                                 # Try to parse and update if valid JSON
                                 try:
                                     if edited_json_str != json_str:
@@ -535,7 +548,7 @@ class SandwichInspector:
                 tab_idx += 1
             
             # Markdown tab (if there are tables) or main content
-            if current_page.content.strip():
+            if has_content:
                 markdown_container = tabs[tab_idx] if len(tab_labels) > 1 else tabs[0]
                 
                 with markdown_container:
@@ -562,9 +575,19 @@ class SandwichInspector:
                             label_visibility="collapsed",
                             help="Scroll to view full content. Switch to Edit Mode to make changes."
                         )
-            elif not current_page.tables:
+            
+            # Handle case where there's no tabular data and no meaningful content
+            if not has_tables and not has_content:
                 with tabs[0]:
-                    st.info("ℹ️ No structured data found on this page")
+                    st.info("📄 **No tabular data found on this page**")
+                    st.markdown("""
+                    This page appears to contain only text content or images without structured tables.
+                    
+                    *This is normal for many PDF pages - not all pages contain tabular data that can be extracted.*
+                    """)
+                    
+                    # Still show approval buttons for pages with no data
+                    st.markdown("You can still approve this page if the PDF content doesn't require data extraction.")
         
         # Action buttons - prominent and clear
         st.markdown("---")
@@ -647,14 +670,16 @@ class SandwichInspector:
                     "tables": []
                 }
                 
-                # Add table data
-                for table in page.tables:
-                    table_data = {
-                        "title": table.title,
-                        "data": table.data
-                    }
-                    page_data["tables"].append(table_data)
-                
+                # Add table data - handle empty tables gracefully
+                if page.tables and len(page.tables) > 0:
+                    for table in page.tables:
+                        table_data = {
+                            "title": table.title,
+                            "data": table.data
+                        }
+                        page_data["tables"].append(table_data)
+                # If page.tables is empty, tables list remains empty in JSON
+            
                 # Save individual page JSON
                 page_file = json_folder / f"page_{i+1}.json"
                 with open(page_file, 'w') as f:
@@ -665,7 +690,9 @@ class SandwichInspector:
             for i, page in enumerate(st.session_state.processed_pages):
                 markdown_file = markdown_folder / f"page_{i+1}.md"
                 with open(markdown_file, 'w', encoding='utf-8') as f:
-                    f.write(page.content)
+                    # Handle empty content gracefully
+                    content_to_save = page.content if page.content else ""
+                    f.write(content_to_save)
             
             # Save inspector metadata (including portfolio tag)
             inspector_metadata = {
@@ -709,8 +736,6 @@ class SandwichInspector:
         except Exception as e:
             st.error(f"Error saving portfolio tag: {str(e)}")
 
-
-
     def create_final_output_folder(self):
         """Create final output folder with consolidated markdown and JSON"""
         if not st.session_state.document_folder or not st.session_state.processed_pages:
@@ -742,16 +767,16 @@ class SandwichInspector:
             
             # 2. Consolidate all page JSONs into a single final JSON
             consolidated_json = {
-                "document_info": {
+                        "document_info": {
                     "document_name": doc_name,
                     "export_date": datetime.now().isoformat(),
                     "total_pages": len(st.session_state.processed_pages),
                     "portfolio": st.session_state.get('portfolio_tag', None),
-                    "review_status": {
-                        "approved_pages": len([i for i in st.session_state.page_statuses.values() if i == 'approved']),
+                            "review_status": {
+                                "approved_pages": len([i for i in st.session_state.page_statuses.values() if i == 'approved']),
                         "flagged_pages": len(st.session_state.flagged_pages)
-                    }
-                },
+                            }
+                        },
                 "pages": []
             }
             
@@ -817,8 +842,6 @@ class SandwichInspector:
             
         except Exception as e:
             st.error(f"❌ Error creating final output folder: {str(e)}")
-
-
 
     def run(self):
         """Main app runner"""
