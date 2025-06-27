@@ -15,6 +15,7 @@ import pandas as pd
 from datetime import datetime
 import os
 from dataclasses import dataclass
+import re
 
 from pdf_utils import PDFViewer
 from inspector_config import get_random_message
@@ -71,6 +72,14 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+def natural_sort_key(filename):
+    """
+    Extract numeric part from filename for natural sorting.
+    Converts 'page_10.json' -> 10, 'page_2.json' -> 2, etc.
+    """
+    match = re.search(r'page_(\d+)', str(filename))
+    return int(match.group(1)) if match else 0
 
 class SandwichInspector:
     """Main application class for the Sandwich Inspector"""
@@ -401,9 +410,9 @@ class SandwichInspector:
     def _load_from_individual_files(self, document_folder, json_folder, markdown_folder):
         """Load document from old individual file structure (backward compatibility)"""
         try:
-            # Load all page JSONs and markdowns
-            json_files = sorted(json_folder.glob("page_*.json"))
-            markdown_files = sorted(markdown_folder.glob("page_*.md"))
+            # Load all page JSONs and markdowns with natural sorting
+            json_files = sorted(json_folder.glob("page_*.json"), key=natural_sort_key)
+            markdown_files = sorted(markdown_folder.glob("page_*.md"), key=natural_sort_key)
             
             if not json_files:
                 st.error(f"❌ No page JSON files found in {document_folder.name}")
