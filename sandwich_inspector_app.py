@@ -17,7 +17,7 @@ import os
 from dataclasses import dataclass
 import re
 
-from pdf_utils import PDFViewer
+from pdf_utils import PDFViewer, get_pdf_page_count
 from inspector_config import get_random_message
 
 # Define data structures that were previously from PB&J
@@ -81,6 +81,44 @@ def natural_sort_key(filename):
     match = re.search(r'page_(\d+)', str(filename))
     return int(match.group(1)) if match else 0
 
+def extract_page_number(filename):
+    """
+    Extract page number from filename.
+    Returns page number as integer, or None if not found.
+    """
+    match = re.search(r'page_(\d+)', str(filename))
+    return int(match.group(1)) if match else None
+
+def create_missing_page_placeholder(page_num):
+    """
+    Create a placeholder ProcessedPage for missing pages.
+    """
+    return ProcessedPage(
+        title=f"❌ Missing Data - Page {page_num}",
+        content=f"""# Missing Page Data
+
+⚠️ **This page was not processed by the extraction pipeline.**
+
+**Page Number:** {page_num}
+
+## Possible Reasons:
+- Processing pipeline failed on this page
+- Complex page layout that couldn't be parsed
+- Image-only content with no extractable data
+- PDF corruption or technical issues
+
+## Next Steps:
+1. 🔄 **Reprocess** this page individually
+2. 🔍 **Manual review** of the original PDF
+3. 🚩 **Flag for attention** during quality control
+
+---
+*This is an automatically generated placeholder for missing page data.*
+""",
+        tables=[],
+        keywords=["missing", "unprocessed", "needs_attention", "placeholder"]
+    )
+
 class SandwichInspector:
     """Main application class for the Sandwich Inspector"""
     
@@ -103,6 +141,8 @@ class SandwichInspector:
             st.session_state.document_folder = None
         if 'edit_mode' not in st.session_state:
             st.session_state.edit_mode = False
+        if 'missing_pages' not in st.session_state:
+            st.session_state.missing_pages = []
 
     def render_header(self):
         """Render the main header"""
@@ -245,6 +285,26 @@ class SandwichInspector:
             <div class="quality-badge flagged">🚩 Flagged: {flagged}</div><br>
             <div class="quality-badge pending">⏳ Pending: {pending}</div>
             """, unsafe_allow_html=True)
+            
+            # Missing pages summary
+            missing_pages = st.session_state.get('missing_pages', [])
+            if missing_pages:
+                st.sidebar.markdown("## ❌ Missing Data")
+                st.sidebar.error(f"**{len(missing_pages)} pages need attention:**")
+                
+                # Show missing pages as clickable buttons
+                missing_display = []
+                for page_num in missing_pages[:6]:  # Show up to 6 missing pages
+                    if st.sidebar.button(f"📄 Page {page_num}", key=f"missing_{page_num}", 
+                                       help=f"Jump to missing page {page_num}",
+                                       use_container_width=True):
+                        st.session_state.current_page_idx = page_num - 1
+                        st.rerun()
+                
+                if len(missing_pages) > 6:
+                    st.sidebar.markdown(f"*...and {len(missing_pages) - 6} more*")
+                    
+                st.sidebar.markdown("💡 *These pages show placeholders - check PDF for content*")
             
             # Flagged items review
             if st.session_state.flagged_pages:
@@ -408,66 +468,124 @@ class SandwichInspector:
             st.error(f"❌ Error reading final_output.json: {e}")
 
     def _load_from_individual_files(self, document_folder, json_folder, markdown_folder):
-        """Load document from old individual file structure (backward compatibility)"""
+        """Load document from old individual file structure with page number matching"""
         try:
-            # Load all page JSONs and markdowns with natural sorting
-            json_files = sorted(json_folder.glob("page_*.json"), key=natural_sort_key)
-            markdown_files = sorted(markdown_folder.glob("page_*.md"), key=natural_sort_key)
+            # Get PDF page count for proper alignment
+            folder_name = document_folder.name
+            doc_name = folder_name.split('_')[0]
+            pdf_path = document_folder / f"{doc_name}.pdf"
+            
+            total_pdf_pages = 0
+            if pdf_path.exists():
+                total_pdf_pages = get_pdf_page_count(pdf_path)
+                st.info(f"📄 PDF has {total_pdf_pages} pages")
+            else:
+                st.warning(f"⚠️ PDF not found: {pdf_path.name}. Using file-based page detection.")
+            
+            # Get all JSON and markdown files
+            json_files = list(json_folder.glob("page_*.json"))
+            markdown_files = list(markdown_folder.glob("page_*.md"))
             
             if not json_files:
                 st.error(f"❌ No page JSON files found in {document_folder.name}")
                 return
-                
-            # Convert to ProcessedPage objects
+            
+            # Create page number mappings
+            json_by_page = {}
+            md_by_page = {}
+            
+            # Map JSON files by page number
+            for json_file in json_files:
+                page_num = extract_page_number(json_file.name)
+                if page_num:
+                    json_by_page[page_num] = json_file
+            
+            # Map markdown files by page number
+            for md_file in markdown_files:
+                page_num = extract_page_number(md_file.name)
+                if page_num:
+                    md_by_page[page_num] = md_file
+            
+            # Determine page range
+            if total_pdf_pages > 0:
+                # Use PDF page count as authoritative
+                page_range = range(1, total_pdf_pages + 1)
+                st.info(f"🎯 Using PDF page count: pages 1-{total_pdf_pages}")
+            else:
+                # Fallback: use highest page number found in files
+                max_page = max(max(json_by_page.keys(), default=0), max(md_by_page.keys(), default=0))
+                page_range = range(1, max_page + 1)
+                st.info(f"📊 Using file-based detection: pages 1-{max_page}")
+            
+            # Track missing pages for metadata
+            missing_pages = []
             processed_pages = []
-            for i, json_file in enumerate(json_files):
-                try:
-                    with open(json_file, 'r') as f:
-                        page_data = json.load(f)
-                    
-                    # Load corresponding markdown if available
-                    markdown_content = ""
-                    if i < len(markdown_files):
-                        try:
-                            with open(markdown_files[i], 'r') as f:
-                                markdown_content = f.read()
-                        except Exception:
-                            pass
-                    
-                    # Create ProcessedTable objects - handle empty tables gracefully
-                    tables = []
-                    table_data_list = page_data.get('tables', [])
-                    
-                    # Only process if there are actual tables
-                    if table_data_list and isinstance(table_data_list, list):
-                        for table_data in table_data_list:
-                            # Ensure table_data is a dictionary
-                            if isinstance(table_data, dict):
-                                # Tables are in old "data" format (list of dictionaries)
-                                data = table_data.get('data', [])
-                                
-                                # Only create table if there's actual data
-                                if data and isinstance(data, list) and len(data) > 0:
-                                    table = ProcessedTable(
-                                        title=table_data.get('title', 'Untitled Table'),
-                                        data=data
-                                    )
-                                    tables.append(table)
-                    
-                    # Create ProcessedPage object
-                    page = ProcessedPage(
-                        title=page_data.get('title', f'Page {i+1}'),
-                        content=markdown_content,
-                        tables=tables,
-                        keywords=page_data.get('keywords', [])
-                    )
-                    processed_pages.append(page)
-                    
-                except Exception as e:
-                    st.error(f"❌ Error loading page {i+1}: {e}")
-                    continue
+            
+            # Process each page in order
+            for page_num in page_range:
+                if page_num in json_by_page:
+                    # Page has data - load it normally
+                    try:
+                        json_file = json_by_page[page_num]
+                        
+                        # Load JSON data
+                        with open(json_file, 'r') as f:
+                            page_data = json.load(f)
+                        
+                        # Load corresponding markdown if available
+                        markdown_content = ""
+                        if page_num in md_by_page:
+                            try:
+                                with open(md_by_page[page_num], 'r') as f:
+                                    markdown_content = f.read()
+                            except Exception:
+                                pass
+                        
+                        # Create ProcessedTable objects
+                        tables = []
+                        table_data_list = page_data.get('tables', [])
+                        
+                        if table_data_list and isinstance(table_data_list, list):
+                            for table_data in table_data_list:
+                                if isinstance(table_data, dict):
+                                    data = table_data.get('data', [])
+                                    if data and isinstance(data, list) and len(data) > 0:
+                                        table = ProcessedTable(
+                                            title=table_data.get('title', 'Untitled Table'),
+                                            data=data
+                                        )
+                                        tables.append(table)
+                        
+                        # Create ProcessedPage object
+                        page = ProcessedPage(
+                            title=page_data.get('title', f'Page {page_num}'),
+                            content=markdown_content,
+                            tables=tables,
+                            keywords=page_data.get('keywords', [])
+                        )
+                        processed_pages.append(page)
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error loading page {page_num}: {e}")
+                        # Add placeholder for corrupted page
+                        processed_pages.append(create_missing_page_placeholder(page_num))
+                        missing_pages.append(page_num)
+                        
+                else:
+                    # Page is missing - create placeholder
+                    st.warning(f"⚠️ Missing data for page {page_num}")
+                    processed_pages.append(create_missing_page_placeholder(page_num))
+                    missing_pages.append(page_num)
             
             if processed_pages:
+                # Store missing pages info in session state for metadata saving
+                st.session_state.missing_pages = missing_pages
+                
+                # Display summary
+                if missing_pages:
+                    st.warning(f"⚠️ {len(missing_pages)} pages have missing data: {', '.join(map(str, missing_pages))}")
+                
+                st.success(f"✅ Loaded {len(processed_pages)} pages with proper PDF alignment")
                 self._finalize_document_loading(document_folder, processed_pages)
             else:
                 st.error("❌ No pages could be loaded from the document")
@@ -498,6 +616,9 @@ class SandwichInspector:
                         st.session_state.page_statuses.update(metadata['page_statuses'])
                     if 'flagged_pages' in metadata:
                         st.session_state.flagged_pages = set(metadata['flagged_pages'])
+                    # Restore missing pages info
+                    if 'missing_pages' in metadata:
+                        st.session_state.missing_pages = metadata['missing_pages']
             except Exception as e:
                 st.warning(f"Could not load existing metadata: {e}")
         
@@ -533,13 +654,27 @@ class SandwichInspector:
         current_page = st.session_state.processed_pages[st.session_state.current_page_idx]
         page_num = st.session_state.current_page_idx + 1
         
+        # Check if this is a missing page
+        is_missing_page = page_num in st.session_state.get('missing_pages', [])
+        
         # Page status indicator
         page_status = st.session_state.page_statuses.get(st.session_state.current_page_idx, 'pending')
-        status_icon = "✅" if page_status == 'approved' else "🚩" if st.session_state.current_page_idx in st.session_state.flagged_pages else "⏳"
+        if is_missing_page:
+            status_icon = "❌"
+        else:
+            status_icon = "✅" if page_status == 'approved' else "🚩" if st.session_state.current_page_idx in st.session_state.flagged_pages else "⏳"
+        
+        # Dynamic styling for missing pages
+        if is_missing_page:
+            header_style = "background: linear-gradient(90deg, #ffe6e6, #fff0f0); border: 2px solid #ff9999;"
+            title_color = "#cc0000"
+        else:
+            header_style = "background: linear-gradient(90deg, #f0f2f6, #ffffff); border: 1px solid #e6e9ef;"
+            title_color = "#262730"
         
         st.markdown(f"""
-        <div style="background: linear-gradient(90deg, #f0f2f6, #ffffff); padding: 15px; border-radius: 10px; margin-bottom: 20px; border: 1px solid #e6e9ef;">
-            <h3 style="margin: 0; color: #262730;">
+        <div style="{header_style} padding: 15px; border-radius: 10px; margin-bottom: 20px;">
+            <h3 style="margin: 0; color: {title_color};">
                 {status_icon} Page {page_num}/{len(st.session_state.processed_pages)}: {current_page.title}
             </h3>
             <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">
@@ -894,10 +1029,11 @@ class SandwichInspector:
     def _save_inspector_metadata(self):
         """Save inspector metadata (common for both formats)"""
         try:
-            # Save inspector metadata (including portfolio tag)
+            # Save inspector metadata (including portfolio tag and missing pages)
             inspector_metadata = {
                 'page_statuses': st.session_state.page_statuses,
                 'flagged_pages': list(st.session_state.flagged_pages),
+                'missing_pages': st.session_state.get('missing_pages', []),
                 'last_updated': datetime.now().isoformat(),
                 'total_pages': len(st.session_state.processed_pages),
                 'portfolio': st.session_state.get('portfolio_tag', None)
@@ -1011,7 +1147,8 @@ class SandwichInspector:
                     "portfolio": st.session_state.get('portfolio_tag', None),
                     "review_status": {
                         "approved_pages": len([i for i in st.session_state.page_statuses.values() if i == 'approved']),
-                        "flagged_pages": len(st.session_state.flagged_pages)
+                        "flagged_pages": len(st.session_state.flagged_pages),
+                        "missing_pages": st.session_state.get('missing_pages', [])
                     }
                 },
                 "pages": []
@@ -1087,6 +1224,8 @@ class SandwichInspector:
             
             portfolio_info = f"\n            - 🏷️ Portfolio: {st.session_state.portfolio_tag}" if st.session_state.get('portfolio_tag') else ""
             pdf_info = "- 📄 Original PDF" if pdf_found else "- ⚠️ Original PDF not found"
+            missing_pages = st.session_state.get('missing_pages', [])
+            missing_info = f"\n            - ❌ Missing Data: {len(missing_pages)} pages ({', '.join(map(str, missing_pages))})" if missing_pages else ""
             
             st.success(f"""
             🎉 **Final Output Created Successfully!**
@@ -1102,7 +1241,7 @@ class SandwichInspector:
             **Review Status:**
             - ✅ Approved: {len([i for i in st.session_state.page_statuses.values() if i == 'approved'])} pages
             - 🚩 Flagged: {len(st.session_state.flagged_pages)} pages  
-            - 📊 Total Tables: {sum(len(page.tables) for page in st.session_state.processed_pages)}{portfolio_info}
+            - 📊 Total Tables: {sum(len(page.tables) for page in st.session_state.processed_pages)}{portfolio_info}{missing_info}
             """)
             
         except Exception as e:
