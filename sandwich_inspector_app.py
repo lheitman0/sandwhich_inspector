@@ -16,6 +16,8 @@ from datetime import datetime
 import os
 from dataclasses import dataclass
 import re
+import tempfile
+import shutil
 
 from pdf_utils import PDFViewer, get_pdf_page_count
 from inspector_config import get_random_message
@@ -255,6 +257,56 @@ class SandwichInspector:
         </div>
         """, unsafe_allow_html=True)
 
+    def _get_completion_status(self, folder, final_folders):
+        """
+        Determine completion status of a document folder.
+        
+        Returns:
+            'completed' - Has been exported to final folder
+            'in_progress' - Has inspector metadata (been worked on)
+            'pending' - Not started yet
+        """
+        folder_path = str(folder)  # Full path to this processed document
+        
+        # Check if there's a corresponding final folder by looking at document metadata
+        # This is much more accurate than name-based matching
+        for final_folder_name in final_folders:
+            final_folder_path = Path(".") / final_folder_name
+            metadata_file = final_folder_path / "document_metadata.json"
+            
+            if metadata_file.exists():
+                try:
+                    with open(metadata_file, 'r') as f:
+                        metadata = json.load(f)
+                    
+                    # Check if this final folder corresponds to our processed document
+                    main_folder = metadata.get('folder_structure', {}).get('main_folder', '')
+                    if main_folder and folder_path.endswith(main_folder.split('/')[-1]):
+                        return "completed"
+                except Exception:
+                    # If we can't read metadata, continue to next final folder
+                    continue
+        
+        # Check if there's inspector metadata (indicates work in progress)
+        metadata_file = folder / "inspector_metadata.json"
+        if metadata_file.exists():
+            return "in_progress"
+        
+        # Check if any pages have been approved (another sign of work in progress)
+        # Look for any edited files that are newer than the original processing
+        json_folder = folder / "03_cleaned_json"
+        if json_folder.exists():
+            try:
+                # Get the folder creation time as baseline
+                folder_time = folder.stat().st_mtime
+                for json_file in json_folder.glob("*.json"):
+                    if json_file.stat().st_mtime > folder_time + 60:  # 1 minute grace period
+                        return "in_progress"
+            except Exception:
+                pass
+        
+        return "pending"
+
     def render_sidebar(self):
         """Render the sidebar with navigation and controls"""
         st.sidebar.markdown("## 📁 Processed Documents")
@@ -269,10 +321,21 @@ class SandwichInspector:
                 # Sort by modification time (newest first)
                 document_folders.sort(key=lambda x: x.stat().st_mtime, reverse=True)
                 
-                # Create display names with timestamps
+                # Get all final folders to check completion status
+                final_folders = []
+                current_dir = Path(".")
+                for item in current_dir.iterdir():
+                    if item.is_dir() and item.name.startswith("final_"):
+                        final_folders.append(item.name)
+                
+                # Create display names with timestamps and completion status
                 folder_options = []
                 for folder in document_folders:
                     folder_name = folder.name
+                    
+                    # Check completion status
+                    completion_status = self._get_completion_status(folder, final_folders)
+                    
                     # Extract timestamp from folder name if available
                     parts = folder_name.split('_')
                     if len(parts) >= 3:
@@ -281,26 +344,66 @@ class SandwichInspector:
                             time_part = parts[-1]
                             date_str = f"{date_part[:4]}-{date_part[4:6]}-{date_part[6:8]}"
                             time_str = f"{time_part[:2]}:{time_part[2:4]}:{time_part[4:6]}"
-                            display_name = f"{parts[0]} ({date_str} {time_str})"
+                            base_name = f"{parts[0]} ({date_str} {time_str})"
                         except (IndexError, ValueError):
-                            display_name = folder_name
+                            base_name = folder_name
                     else:
-                        display_name = folder_name
+                        base_name = folder_name
+                    
+                    # Add completion status to display name
+                    if completion_status == "completed":
+                        display_name = f"✅ {base_name}"
+                    elif completion_status == "in_progress":
+                        display_name = f"🔄 {base_name}"
+                    else:
+                        display_name = f"⏳ {base_name}"
+                    
                     folder_options.append((display_name, folder))
+                
+                # Show completion progress summary
+                completed_count = sum(1 for display_name, _ in folder_options if display_name.startswith("✅"))
+                in_progress_count = sum(1 for display_name, _ in folder_options if display_name.startswith("🔄"))
+                pending_count = sum(1 for display_name, _ in folder_options if display_name.startswith("⏳"))
+                total_count = len(folder_options)
+                
+                if total_count > 0:
+                    completion_pct = (completed_count / total_count) * 100
+                    st.sidebar.markdown("### 📊 Overall Progress")
+                    st.sidebar.progress(completion_pct / 100)
+                    st.sidebar.markdown(f"""
+                    <div style="font-size: 0.9em;">
+                    ✅ <strong>Completed:</strong> {completed_count}/{total_count} ({completion_pct:.0f}%)<br>
+                    🔄 <strong>In Progress:</strong> {in_progress_count}<br>
+                    ⏳ <strong>Pending:</strong> {pending_count}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    st.sidebar.markdown("---")
                 
                 # Document selection
                 selected_option = st.sidebar.selectbox(
                     "Select document to review:",
                     range(len(folder_options)),
                     format_func=lambda i: folder_options[i][0],
-                    help="Choose a processed document to review and edit"
+                    help="✅ Completed | 🔄 In Progress | ⏳ Pending"
                 )
                 
                 if selected_option is not None:
                     selected_folder = folder_options[selected_option][1]
+                    selected_display_name = folder_options[selected_option][0]
+                    
+                    # Show status-specific button text
+                    if selected_display_name.startswith("✅"):
+                        button_text = "🔍 Review Completed"
+                        button_type = "secondary"
+                    elif selected_display_name.startswith("🔄"):
+                        button_text = "📖 Continue Review"
+                        button_type = "primary"
+                    else:
+                        button_text = "🚀 Start Review"
+                        button_type = "primary"
                     
                     # Load document button
-                    if st.sidebar.button("📖 Load Document", use_container_width=True):
+                    if st.sidebar.button(button_text, use_container_width=True, type=button_type):
                         self.load_processed_document(selected_folder)
                     
                     # Show document info if available
@@ -351,11 +454,35 @@ class SandwichInspector:
                         st.session_state.current_page_idx += 1
                         st.rerun()
             
-            # Direct page selection
+            # Direct page selection with enhanced format
+            def format_page_dropdown(page_num):
+                # page_num is 1-based, convert to 0-based for array access
+                page_index = page_num - 1
+                page = st.session_state.processed_pages[page_index]
+                pdf_page_num = page.pdf_page_number
+                title = page.title
+                
+                # Check if useless (only from explicit useless_pages list)
+                is_useless = pdf_page_num in st.session_state.get('useless_pages', [])
+                
+                # Check if missing
+                is_missing = pdf_page_num in st.session_state.get('missing_pages', [])
+                
+                # Truncate title
+                display_title = title[:25] + "..." if len(title) > 25 else title
+                
+                if is_useless:
+                    return f"🗑️ PDF Page {pdf_page_num}: {display_title}"
+                elif is_missing:
+                    return f"❌ PDF Page {pdf_page_num}: {display_title}"
+                else:
+                    return f"📄 PDF Page {pdf_page_num}: {display_title}"
+            
             new_page = st.sidebar.selectbox(
                 "Jump to page:",
                 range(1, total_pages + 1),
-                index=current_page - 1
+                index=current_page - 1,
+                format_func=format_page_dropdown
             ) - 1
             
             if new_page != st.session_state.current_page_idx:
@@ -688,23 +815,33 @@ class SandwichInspector:
                     try:
                         page_data = processed_data_by_page[page_num]
                         
-                        # Get page content - try different field names for compatibility
-                        page_content = page_data.get('raw_content', page_data.get('content', ''))
+                        # SMART CONTENT SELECTION: Check if document has been edited/reviewed
+                        has_been_edited = self._document_has_been_edited(document_folder)
                         
-                        # Load corresponding PARSED markdown file (01_parsed_markdown, NOT 02_enhanced_markdown)
-                        # We use the original parsed markdown to maintain data integrity
-                        markdown_folder = document_folder / "01_parsed_markdown"
-                        if markdown_folder.exists():
-                            markdown_file = markdown_folder / f"page_{page_num}.md"
-                            if markdown_file.exists():
-                                try:
-                                    with open(markdown_file, 'r', encoding='utf-8') as f:
-                                        markdown_content = f.read()
-                                    # Use markdown file content if it exists and is longer
-                                    if len(markdown_content.strip()) > len(page_content.strip()):
-                                        page_content = markdown_content
-                                except Exception:
-                                    pass
+                        if has_been_edited:
+                            # EDITED DOCUMENT: Respect user edits in final_output.json (including "useless" markings)
+                            page_content = page_data.get('raw_content', page_data.get('content', ''))
+                            print(f"✅ Using final_output.json content for page {page_num} (edited document)")
+                        else:
+                            # UNEDITED DOCUMENT: Use clean original markdown, fallback to final_output.json
+                            page_content = ""
+                            markdown_folder = document_folder / "01_parsed_markdown"
+                            if markdown_folder.exists():
+                                markdown_file = markdown_folder / f"page_{page_num}.md"
+                                if markdown_file.exists():
+                                    try:
+                                        with open(markdown_file, 'r', encoding='utf-8') as f:
+                                            page_content = f.read()
+                                        print(f"✅ Using original markdown for page {page_num} (unedited document)")
+                                    except Exception as e:
+                                        print(f"❌ Error loading parsed markdown: {e}")
+                                        page_content = page_data.get('raw_content', page_data.get('content', ''))
+                                else:
+                                    print(f"⚠️ Parsed markdown not found, using final_output.json for page {page_num}")
+                                    page_content = page_data.get('raw_content', page_data.get('content', ''))
+                            else:
+                                print(f"⚠️ Parsed markdown folder not found, using final_output.json for page {page_num}")
+                                page_content = page_data.get('raw_content', page_data.get('content', ''))
                         
                         # Create ProcessedTable objects from new structure
                         tables = []
@@ -921,6 +1058,42 @@ class SandwichInspector:
         except Exception as e:
             st.error(f"❌ Error loading from individual files: {e}")
 
+    def _document_has_been_edited(self, document_folder):
+        """Check if document has been edited/reviewed by looking for inspector metadata"""
+        metadata_file = document_folder / "inspector_metadata.json"
+        
+        if not metadata_file.exists():
+            return False
+        
+        try:
+            with open(metadata_file, 'r') as f:
+                metadata = json.load(f)
+            
+            # Check for signs of editing/review
+            page_statuses = metadata.get('page_statuses', {})
+            useless_pages = metadata.get('useless_pages', [])
+            flagged_pages = metadata.get('flagged_pages', [])
+            portfolio = metadata.get('portfolio')
+            
+            # If any pages have been approved/reviewed, or marked as useless, or flagged, or portfolio set
+            has_page_reviews = any(status in ['approved', 'flagged'] for status in page_statuses.values())
+            has_useless_markings = len(useless_pages) > 0
+            has_flagged_pages = len(flagged_pages) > 0
+            has_portfolio = portfolio is not None and portfolio.strip() != ''
+            
+            is_edited = has_page_reviews or has_useless_markings or has_flagged_pages or has_portfolio
+            
+            if is_edited:
+                print(f"📝 Document has been edited (reviews: {has_page_reviews}, useless: {has_useless_markings}, flagged: {has_flagged_pages}, portfolio: {has_portfolio})")
+            else:
+                print(f"📄 Document appears unedited")
+                
+            return is_edited
+            
+        except Exception as e:
+            print(f"❌ Error reading inspector metadata: {e}")
+            return False  # Default to unedited if we can't read metadata
+
     def _finalize_document_loading(self, document_folder, processed_pages):
         """Finalize document loading - common code for both loading methods"""
         # Update session state
@@ -986,12 +1159,19 @@ class SandwichInspector:
             return
         
         current_page = st.session_state.processed_pages[st.session_state.current_page_idx]
-        page_num = st.session_state.current_page_idx + 1
+        ui_page_num = st.session_state.current_page_idx + 1  # UI position (1, 2, 3, ...)
+        pdf_page_num = current_page.pdf_page_number  # Actual PDF page number
         
         # Check if this is a missing, incomplete, or useless page
-        is_missing_page = page_num in st.session_state.get('missing_pages', [])
-        is_incomplete_page = page_num in st.session_state.get('incomplete_pages', [])
-        is_useless_page = current_page.pdf_page_number in st.session_state.get('useless_pages', [])
+        is_missing_page = pdf_page_num in st.session_state.get('missing_pages', [])
+        is_incomplete_page = pdf_page_num in st.session_state.get('incomplete_pages', [])
+        is_useless_page = pdf_page_num in st.session_state.get('useless_pages', [])
+        
+        # Note: Removed automatic content-based useless detection to allow users 
+        # to type "useless" in content without triggering useless page mode.
+        # Pages should only be marked as useless through explicit user action 
+        # (clicking "Mark as Useless" button) or when loaded as previously marked useless.
+        # is_useless_page already contains the correct value from the useless_pages list.
         
         # Page status indicator
         page_status = st.session_state.page_statuses.get(st.session_state.current_page_idx, 'pending')
@@ -1018,10 +1198,16 @@ class SandwichInspector:
             header_style = "background: linear-gradient(90deg, #f0f2f6, #ffffff); border: 1px solid #e6e9ef;"
             title_color = "#262730"
         
+        # Create header with clear page numbering
+        if pdf_page_num != ui_page_num:
+            page_display = f"PDF Page {pdf_page_num} (UI {ui_page_num}/{len(st.session_state.processed_pages)})"
+        else:
+            page_display = f"Page {pdf_page_num}/{len(st.session_state.processed_pages)}"
+        
         st.markdown(f"""
         <div style="{header_style} padding: 15px; border-radius: 10px; margin-bottom: 20px;">
             <h3 style="margin: 0; color: {title_color};">
-                {status_icon} Page {page_num}/{len(st.session_state.processed_pages)}: {current_page.title}
+                {status_icon} {page_display}: {current_page.title}
             </h3>
             <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">
                 <strong>Keywords:</strong> {', '.join(current_page.keywords[:5])}{'...' if len(current_page.keywords) > 5 else ''}
@@ -1035,12 +1221,8 @@ class SandwichInspector:
         with pdf_col:
             st.markdown("### 📄 Ground Truth (PDF)")
             
-            # Show PDF page info with clear distinction
-            pdf_page_num = current_page.pdf_page_number
-            if pdf_page_num != page_num:
-                st.markdown(f"**🎯 PDF Page {pdf_page_num}** *(UI Page {page_num})*")
-            else:
-                st.markdown(f"**📄 PDF Page {pdf_page_num}**")
+            # Show PDF page info
+            st.markdown(f"**📄 PDF Page {pdf_page_num}**")
             
             # Display PDF page
             if st.session_state.document_folder:
@@ -1058,18 +1240,42 @@ class SandwichInspector:
                     st.error(f"PDF not found: {pdf_path}")
         
         with data_col:
+            # Special handling for useless pages
+            if is_useless_page:
+                st.markdown("### 🗑️ Useless Page - No Meaningful Content")
+                
+                st.markdown("""
+                <div style="background: linear-gradient(90deg, #f8f9fa, #e9ecef); padding: 20px; border-radius: 10px; border: 2px dashed #6c757d; text-align: center; margin: 20px 0;">
+                    <h3 style="color: #6c757d; margin: 0;">🗑️ USELESS PAGE</h3>
+                    <p style="color: #868e96; margin: 10px 0 0 0;">This page contains no meaningful content and was marked as useless during processing.</p>
+                    <p style="color: #868e96; margin: 5px 0 0 0; font-size: 14px;"><em>Page maintained for PDF alignment purposes</em></p>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Show minimal info about why it's useless
+                with st.expander("🔍 Debug Info - Why This Page Is Useless", expanded=False):
+                    st.write("**Page Title:**", current_page.title)
+                    st.write("**Content:**", repr(current_page.content[:100]) if current_page.content else "None")
+                    st.write("**Keywords:**", current_page.keywords)
+                    st.write("**Tables:**", f"{len(current_page.tables)} table(s)" if current_page.tables else "No tables")
+                
+                return  # Skip normal content rendering for useless pages
+            
             st.markdown("### 🔍 Extracted Data - Verify Accuracy")
             
             # Check what data we have
             has_tables = current_page.tables and len(current_page.tables) > 0
             has_content = current_page.content and current_page.content.strip()
             
+            # In edit mode, always show markdown tab even if content is empty
+            show_markdown_tab = has_content or st.session_state.edit_mode
+            
             # Determine tab structure
-            if has_tables and has_content:
+            if has_tables and show_markdown_tab:
                 tab_labels = ["📊 Tables", "📝 Markdown"]
             elif has_tables:
                 tab_labels = ["📊 Tables"]
-            elif has_content:
+            elif show_markdown_tab:
                 tab_labels = ["📝 Markdown"]
             else:
                 tab_labels = ["ℹ️ No Data"]
@@ -1117,18 +1323,56 @@ class SandwichInspector:
                                             st.session_state.processed_pages[st.session_state.current_page_idx].tables[i].data = edited_table_data['data']
                                             if 'title' in edited_table_data:
                                                 st.session_state.processed_pages[st.session_state.current_page_idx].tables[i].title = edited_table_data['title']
-                                            st.success("✅ JSON updated successfully!")
-                                            # Auto-save the changes to persist them
-                                            self.save_current_state()
-                                            # Force a rerun to show the updated data
-                                            st.rerun()
+                                            st.success("✅ JSON updated in memory! Click 'Stop Editing' or 'Save Changes' to persist.")
+                                            # Note: We don't auto-save to disk here anymore to avoid constant I/O
+                                            # Changes are saved in session state and will persist when user explicitly saves
                                 except json.JSONDecodeError as e:
                                     st.error(f"❌ Invalid JSON: {str(e)}")
                                 except Exception as e:
                                     st.error(f"❌ Error updating table: {str(e)}")
                             else:
                                 # View mode: Show table normally
-                                df = pd.DataFrame(table.data)
+                                try:
+                                    # Handle different data formats
+                                    if not table.data:
+                                        st.warning("⚠️ Table data is empty")
+                                        continue
+                                    
+                                    # Check if data is properly formatted
+                                    if isinstance(table.data[0], dict):
+                                        # Standard format: list of dictionaries
+                                        df = pd.DataFrame(table.data)
+                                    elif isinstance(table.data[0], list):
+                                        # Alternative format: list of lists (needs column names)
+                                        st.warning("⚠️ Table data is in list format, converting to DataFrame")
+                                        # Use generic column names
+                                        max_cols = max(len(row) for row in table.data) if table.data else 0
+                                        column_names = [f"Column_{i+1}" for i in range(max_cols)]
+                                        df = pd.DataFrame(table.data, columns=column_names)
+                                    else:
+                                        # Unknown format
+                                        st.error(f"❌ Unsupported table data format: {type(table.data[0])}")
+                                        st.write("**Raw data:**", table.data[:3])  # Show first 3 items for debugging
+                                        continue
+                                    
+                                    # Convert complex data types to strings for Arrow compatibility
+                                    for col in df.columns:
+                                        if df[col].dtype == 'object':
+                                            # Convert any dict, list, or complex objects to strings
+                                            df[col] = df[col].apply(lambda x: str(x) if isinstance(x, (dict, list)) else x)
+                                            # Handle any remaining non-string objects
+                                            df[col] = df[col].astype(str)
+                                    
+                                except Exception as e:
+                                    st.error(f"❌ Error processing table data: {str(e)}")
+                                    st.write("**Raw table data structure:**")
+                                    st.write(f"- Data type: {type(table.data)}")
+                                    st.write(f"- Data length: {len(table.data) if table.data else 0}")
+                                    if table.data:
+                                        st.write(f"- First item type: {type(table.data[0])}")
+                                        st.write(f"- First item: {table.data[0]}")
+                                    continue
+                                
                                 st.markdown(f"*{len(df)} rows × {len(df.columns)} columns*")
                                 
                                 # Read-only table with better formatting
@@ -1146,7 +1390,7 @@ class SandwichInspector:
                 tab_idx += 1
             
             # Markdown tab (if there are tables) or main content
-            if has_content:
+            if show_markdown_tab:
                 markdown_container = tabs[tab_idx] if len(tab_labels) > 1 else tabs[0]
                 
                 with markdown_container:
@@ -1154,26 +1398,31 @@ class SandwichInspector:
                         st.info("🔧 **EDIT MODE**: Review and correct the markdown content")
                         edited_content = st.text_area(
                             "Markdown content:",
-                            current_page.content,
+                            current_page.content or "",  # Use empty string if content is None
                             height=500,
                             key=f"markdown_editor_{st.session_state.current_page_idx}",
                             help="Edit the markdown to match the PDF content exactly"
                         )
                         # Update content if changed
-                        if edited_content != current_page.content:
+                        if edited_content != (current_page.content or ""):
                             # Update the actual session state object, not local variable
                             st.session_state.processed_pages[st.session_state.current_page_idx].content = edited_content
+                            st.info("📝 Markdown updated in memory! Click 'Stop Editing' or 'Save Changes' to persist.")
                     else:
-                        st.markdown("**📝 Extracted Content:**")
-                        # Fixed height scrollable container for markdown
-                        st.text_area(
-                            "Markdown content (read-only):",
-                            current_page.content,
-                            height=500,
-                            disabled=True,
-                            label_visibility="collapsed",
-                            help="Scroll to view full content. Switch to Edit Mode to make changes."
-                        )
+                        if has_content:
+                            st.markdown("**📝 Extracted Content:**")
+                            # Fixed height scrollable container for markdown
+                            st.text_area(
+                                "Markdown content (read-only):",
+                                current_page.content,
+                                height=500,
+                                disabled=True,
+                                label_visibility="collapsed",
+                                help="Scroll to view full content. Switch to Edit Mode to make changes."
+                            )
+                        else:
+                            st.info("📝 **No markdown content found**")
+                            st.markdown("This page has no extracted markdown content. Switch to Edit Mode to add content manually.")
             
             # Handle special cases for incomplete and empty pages
             if is_incomplete_page:
@@ -1201,7 +1450,7 @@ class SandwichInspector:
                 - 🔍 Check pipeline logs for specific error messages
                 - 🚩 Flag this page for manual review if reprocessing fails
                 """)
-            elif not has_tables and not has_content:
+            elif not has_tables and not has_content and not st.session_state.edit_mode:
                 with tabs[0]:
                     st.info("📄 **No tabular data found on this page**")
                     st.markdown("""
@@ -1222,6 +1471,14 @@ class SandwichInspector:
         with button_col1:
             edit_button_text = "🔧 Stop Editing" if st.session_state.edit_mode else "✏️ Edit Mode"
             if st.button(edit_button_text, use_container_width=True, type="secondary"):
+                # If stopping edit mode, save any pending changes first
+                if st.session_state.edit_mode:
+                    try:
+                        self.save_current_state()
+                        st.success("💾 Edits saved!")
+                    except Exception as e:
+                        st.error(f"❌ Error saving edits: {str(e)}")
+                
                 st.session_state.edit_mode = not st.session_state.edit_mode
                 st.rerun()
         
@@ -1252,7 +1509,8 @@ class SandwichInspector:
                         st.success("💾 Changes saved to final_output.json!")
                     else:
                         st.success("💾 Changes saved to individual JSON files!")
-                    st.info(f"📄 Saved page {st.session_state.current_page_idx + 1} data to disk")
+                    current_page = st.session_state.processed_pages[st.session_state.current_page_idx]
+                    st.info(f"📄 Saved PDF page {current_page.pdf_page_number} data to disk")
                 except Exception as e:
                     st.error(f"❌ Error saving changes: {str(e)}")
                     st.error("Check file permissions and try again")
@@ -1263,7 +1521,11 @@ class SandwichInspector:
         
         # Status indicator
         if st.session_state.edit_mode:
-            st.info("🔧 **EDIT MODE ACTIVE** - Make your corrections above, they auto-save when you navigate or export.")
+            st.info("🔧 **EDIT MODE ACTIVE** - Make your corrections above. Changes save to memory automatically and persist to disk when you click 'Stop Editing' or 'Save Changes'.")
+        
+        # Debug info (only show if there are page ordering issues)
+        if st.button("🔍 Debug Page Order", help="Show detailed page ordering information"):
+            self._show_debug_info()
         
         # Quick navigation
         if len(st.session_state.processed_pages) > 1:
@@ -1335,6 +1597,9 @@ class SandwichInspector:
 
     def _save_to_final_output(self, final_output_file):
         """Save changes back to final_output.json format"""
+        import tempfile
+        import shutil
+        
         try:
             # Load existing final_output.json
             with open(final_output_file, 'r') as f:
@@ -1396,15 +1661,45 @@ class SandwichInspector:
                             # No tables - set empty array
                             page_data['tables'] = []
             
-            # Save the updated final_output.json
-            with open(final_output_file, 'w', encoding='utf-8') as f:
-                json.dump(final_data, f, indent=2, ensure_ascii=False)
-            
-            print(f"✅ Successfully wrote {len(final_data.get('pages', []))} pages to {final_output_file}")
+            # Use atomic write to prevent corruption during disk full situations
+            # Write to temporary file first, then move to final location
+            temp_file = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode='w', 
+                    encoding='utf-8', 
+                    suffix='.json',
+                    dir=final_output_file.parent,
+                    delete=False
+                ) as temp_file:
+                    json.dump(final_data, temp_file, indent=2, ensure_ascii=False)
+                    temp_file_path = temp_file.name
+                
+                # Atomically move the temp file to replace the original
+                shutil.move(temp_file_path, final_output_file)
+                
+                print(f"✅ Successfully wrote {len(final_data.get('pages', []))} pages to {final_output_file}")
+                
+            except Exception as atomic_error:
+                # Clean up temp file if it exists
+                if temp_file and os.path.exists(temp_file.name):
+                    try:
+                        os.unlink(temp_file.name)
+                    except:
+                        pass
+                raise atomic_error
                 
         except Exception as e:
-            print(f"❌ Error saving to final_output.json: {str(e)}")
-            st.error(f"Error saving to final_output.json: {str(e)}")
+            error_msg = str(e)
+            print(f"❌ Error saving to final_output.json: {error_msg}")
+            
+            # Provide helpful suggestions based on error type
+            if "No space left on device" in error_msg:
+                st.error("💾 **Disk Full Error**: Please free up disk space and try again. The file was not corrupted.")
+            elif "Expecting value" in error_msg or "Unterminated" in error_msg:
+                st.error("🔧 **Corrupted JSON detected**: Please run `python fix_corrupted_json.py` to repair the file.")
+            else:
+                st.error(f"Error saving to final_output.json: {error_msg}")
             raise
 
     def _save_to_individual_files(self):
@@ -1413,7 +1708,11 @@ class SandwichInspector:
             # Save back to the individual page JSON files in 03_cleaned_json
             json_folder = st.session_state.document_folder / "03_cleaned_json"
             
-            for i, page in enumerate(st.session_state.processed_pages):
+            for page in st.session_state.processed_pages:
+                # Skip saving placeholders for missing pages (they don't have real data)
+                if page.title.startswith("❌ Missing Data"):
+                    continue
+                    
                 # Convert to the original JSON format
                 page_data = {
                     "title": page.title,
@@ -1431,25 +1730,32 @@ class SandwichInspector:
                         page_data["tables"].append(table_data)
                 # If page.tables is empty, tables list remains empty in JSON
             
-                # Save individual page JSON
-                page_file = json_folder / f"page_{i+1}.json"
+                # Save individual page JSON using PDF page number, not UI index
+                page_file = json_folder / f"page_{page.pdf_page_number}.json"
                 with open(page_file, 'w', encoding='utf-8') as f:
                     json.dump(page_data, f, indent=2, ensure_ascii=False)
             
-            print(f"✅ Successfully wrote {len(st.session_state.processed_pages)} JSON files to {json_folder}")
+            # Count non-placeholder pages for logging
+            real_pages = [p for p in st.session_state.processed_pages if not p.title.startswith("❌ Missing Data")]
+            print(f"✅ Successfully wrote {len(real_pages)} JSON files to {json_folder}")
             
             # Also save back to PARSED markdown files (01_parsed_markdown, NOT 02_enhanced_markdown)
             # We use the original parsed markdown to maintain data integrity
             markdown_folder = st.session_state.document_folder / "01_parsed_markdown"
             if markdown_folder.exists():
-                for i, page in enumerate(st.session_state.processed_pages):
-                    markdown_file = markdown_folder / f"page_{i+1}.md"
+                for page in st.session_state.processed_pages:
+                    # Skip saving placeholders for missing pages
+                    if page.title.startswith("❌ Missing Data"):
+                        continue
+                        
+                    # Save markdown using PDF page number, not UI index
+                    markdown_file = markdown_folder / f"page_{page.pdf_page_number}.md"
                     with open(markdown_file, 'w', encoding='utf-8') as f:
                         # Handle empty content gracefully
                         content_to_save = page.content if page.content else ""
                         f.write(content_to_save)
                 
-                print(f"✅ Successfully wrote {len(st.session_state.processed_pages)} markdown files to {markdown_folder}")
+                print(f"✅ Successfully wrote {len(real_pages)} markdown files to {markdown_folder}")
             else:
                 print(f"⚠️ Markdown folder {markdown_folder} does not exist, skipping markdown save")
                     
@@ -1686,6 +1992,68 @@ class SandwichInspector:
             
         except Exception as e:
             st.error(f"❌ Error creating final output folder: {str(e)}")
+
+    def _show_debug_info(self):
+        """Show debugging information about page ordering"""
+        st.markdown("### 🔍 Debug Information")
+        
+        if not st.session_state.processed_pages:
+            st.warning("No pages loaded")
+            return
+        
+        # Create debug table
+        debug_data = []
+        for i, page in enumerate(st.session_state.processed_pages):
+            debug_data.append({
+                "UI Index": i,
+                "UI Position": i + 1,
+                "PDF Page #": page.pdf_page_number,
+                "Title": page.title[:50] + "..." if len(page.title) > 50 else page.title,
+                "Has Tables": len(page.tables) > 0,
+                "Has Content": bool(page.content and page.content.strip()),
+                "Is Missing": page.title.startswith("❌ Missing Data"),
+                "Is Incomplete": page.title.startswith("⚠️ Incomplete")
+            })
+        
+        debug_df = pd.DataFrame(debug_data)
+        st.dataframe(debug_df, use_container_width=True)
+        
+        # Show order issues
+        expected_order = list(range(1, len(st.session_state.processed_pages) + 1))
+        actual_order = [page.pdf_page_number for page in st.session_state.processed_pages]
+        
+        if expected_order != actual_order:
+            st.error("🚨 **Page Order Issue Detected!**")
+            st.markdown(f"**Expected:** {expected_order}")
+            st.markdown(f"**Actual:** {actual_order}")
+            
+            # Show gaps
+            gaps = []
+            for i in range(1, max(actual_order) + 1):
+                if i not in actual_order:
+                    gaps.append(i)
+            if gaps:
+                st.warning(f"**Missing page numbers:** {gaps}")
+                
+            # Show duplicates
+            duplicates = []
+            seen = set()
+            for page_num in actual_order:
+                if page_num in seen:
+                    duplicates.append(page_num)
+                seen.add(page_num)
+            if duplicates:
+                st.error(f"**Duplicate page numbers:** {duplicates}")
+        else:
+            st.success("✅ Page order is correct!")
+        
+        # Show session state info
+        st.markdown("**Session State Info:**")
+        st.markdown(f"- Total pages: {len(st.session_state.processed_pages)}")
+        st.markdown(f"- Current page: {st.session_state.current_page_idx}")
+        st.markdown(f"- Missing pages: {st.session_state.get('missing_pages', [])}")
+        st.markdown(f"- Incomplete pages: {st.session_state.get('incomplete_pages', [])}")
+        st.markdown(f"- Useless pages: {st.session_state.get('useless_pages', [])}")
 
     def mark_page_as_useless(self, page_index):
         """Mark a page as useless by replacing its content with 'useless'"""
